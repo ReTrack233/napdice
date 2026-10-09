@@ -1,0 +1,58 @@
+NapDice 使用说明
+
+本程序用于在 NapCat 上运行 Dice! 骰娘。压缩包内包含：
+
+  dice-host.exe                   驱动程序
+  w4123.Dice.windows.*.dll        Dice! 核心
+  LICENSE.txt                     许可证
+
+
+一、首次使用
+
+1. 在 NapCat WebUI 的「网络配置」中新建「WebSocket 服务器」，主机填写 127.0.0.1，端口填写 3001，并设置 Token。
+2. 运行 dice-host.exe。首次运行时，程序会在同一目录下生成配置文件 dice-host.json。
+3. 使用文本编辑器打开 dice-host.json，修改以下两项后保存：
+     "ws_url"          第 1 步中的地址，例如 ws://127.0.0.1:3001
+     "access_token"    第 1 步中设置的 Token
+4. 重新运行 dice-host.exe。
+5. 日志中会出现「.master ******** //私骰作成」字样的口令。使用管理者本人的 QQ 私聊骰娘并发送该口令，即可完成认主。
+
+
+二、从 DiceDriver.OneBot 迁移
+
+1. 备份 Dice{QQ号} 目录，并关闭 DiceDriver.OneBot.exe。
+2. 将本压缩包中的全部文件复制到原 DiceDriver.OneBot.exe 所在目录（该目录下应有 Dice{QQ号}、Diceki 等子目录）。
+3. 运行 dice-host.exe，按第一部分第 3 步填写 ws_url 与 access_token。原先供 DiceDriver.OneBot 使用的地址和 Token 可直接沿用。
+4. 如需继续使用原有的核心文件，请在 dice-host.json 的 "core_path" 中填写其路径，并使用相同位数的 dice-host.exe：
+     w4123.Dice.windows.i386.dll（32 位）   使用 win-x86 压缩包
+     w4123.Dice.windows.amd64.dll（64 位）  使用 win-x64 压缩包
+
+
+三、运行与退出
+
+程序日志保存在 logs 目录。关闭窗口或按 Ctrl+C 时，程序会在保存数据后退出。
+核心异常退出时，程序会自动重启核心；与 NapCat 的连接断开时，程序会自动重连。
+
+
+四、常见问题
+
+1. 窗口打开后立即关闭
+   请查看 logs 目录中的日志，或在命令提示符中运行 dice-host.exe 以查看错误信息。
+
+2. 提示 access_token 不正确
+   dice-host.json 中的 access_token 须与 NapCat 中设置的 Token 完全一致。
+
+3. 提示核心位数与程序不符
+   请改用另一位数的 dice-host.exe。
+
+4. 提示路径中含有无法表示的字符
+   Dice! 核心按系统代码页处理路径，请将骰子目录移至仅含中文、英文字母和数字的路径下。
+
+5. 需要将数据放在其他位置
+   在 dice-host.json 中设置 "root_dir"，指向包含 Dice{QQ号} 的目录。
+
+6. NapCat 运行在其他机器或容器中
+   在 dice-host.json 中将 "media_base64" 设置为 true，否则图片、语音和文件无法发送。
+
+
+其他配置项及扩展功能的说明，请参阅项目 README。

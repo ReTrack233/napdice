@@ -1,0 +1,13 @@
+diff --git a/Dice/DiceAttrVar.cpp b/Dice/DiceAttrVar.cpp
+index bc4c63e..5edfd65 100644
+--- a/Dice/DiceAttrVar.cpp
++++ b/Dice/DiceAttrVar.cpp
+@@ -692,7 +692,7 @@ bool AttrVar::equal_or_less(const AttrVar& other)const {
+ void AnysTable::from_json(const fifo_json& j){
+ 	if (j.is_object()) {
+ 		unordered_set<string> idxs;
+-		fifo_json tab{j};
++		fifo_json tab = j;
+ 		if (string strI{ "0" }; tab.count(strI)) {
+ 			new_list();
+ 			int idx{ 0 };

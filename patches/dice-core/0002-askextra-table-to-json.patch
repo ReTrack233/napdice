@@ -1,0 +1,13 @@
+diff --git a/Dice/DiceLua.cpp b/Dice/DiceLua.cpp
+index 2195eff..0450c3c 100644
+--- a/Dice/DiceLua.cpp
++++ b/Dice/DiceLua.cpp
+@@ -1091,7 +1091,7 @@ LUADEF(eventMsg) {
+ LUADEF(askExtra) {
+ 	string data;	//utf-8
+ 	if (lua_istable(L, 1)) {
+-		data = to_json(lua_to_table(L, 1)).dump();
++		data = lua_to_table(L, 1).to_json().dump();
+ 	}
+ 	else {
+ 		data = lua_to_raw_string(L, 1);

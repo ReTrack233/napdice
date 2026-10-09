@@ -1,0 +1,233 @@
+name: build-windows
+
+# Builds dice-host.exe (x64 + x86) and the Dice! core (w4123.Dice.dll) from the official source,
+# runs the unit + end-to-end tests on Windows, then packages ready-to-run zips.
+# Push a tag like v0.1.0 to publish a GitHub Release.
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      dice_ref:
+        description: 'Dice! 源码的分支 / 标签 / 提交（留空 = 仓库默认分支 newdev）'
+        required: false
+        default: ''
+      build_core:
+        description: '同时编译 Dice! 核心（首次约 40~90 分钟，之后有缓存）'
+        type: boolean
+        required: false
+        default: true
+
+env:
+  DICE_REF: ${{ github.event.inputs.dice_ref }}
+
+jobs:
+  host:
+    name: dice-host (${{ matrix.arch }})
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            platform: x64
+          - arch: x86
+            platform: Win32
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure
+        run: cmake -S . -B build -A ${{ matrix.platform }} -DNAPDICE_BUILD_TESTS=ON
+
+      - name: Build
+        run: cmake --build build --config Release
+
+      - name: Unit tests
+        run: ctest --test-dir build -C Release --output-on-failure
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          & build\Release\dice-host.exe --version
+          if ($LASTEXITCODE -ne 0) { exit 1 }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dice-host-win-${{ matrix.arch }}
+          path: build/Release/dice-host.exe
+
+  core:
+    name: Dice! core (${{ matrix.arch }})
+    if: github.event_name != 'workflow_dispatch' || inputs.build_core
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            platform: x64
+            triplet: x64-windows-static
+            dll_sfx: windows.amd64
+          - arch: x86
+            platform: Win32
+            triplet: x86-windows-static
+            dll_sfx: windows.i386
+    env:
+      VCPKG_BINARY_SOURCES: 'clear;files,${{ github.workspace }}\vcpkg-bincache,readwrite'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/checkout@v4
+        with:
+          repository: Dice-Developer-Team/Dice
+          ref: ${{ env.DICE_REF }}
+          submodules: recursive
+          path: Dice
+
+      # Two small upstream fixes (see patches/dice-core/README.md). Skipped automatically once
+      # upstream has fixed them.
+      - name: Apply core patches
+        shell: bash
+        run: |
+          for p in patches/dice-core/*.patch; do
+            if git -C Dice apply --check "$GITHUB_WORKSPACE/$p" 2>/dev/null; then
+              git -C Dice apply "$GITHUB_WORKSPACE/$p" && echo "applied $p"
+            else
+              echo "::warning::skipped $p (already fixed upstream, or the source changed)"
+            fi
+          done
+
+      - name: Record Dice! commit
+        id: rev
+        shell: bash
+        run: |
+          echo "dice=$(git -C Dice rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "vcpkg=$(git -C Dice/vcpkg rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: GuillaumeFalourd/setup-windows10-sdk-action@v2.4
+        with:
+          sdk-version: 19041
+
+      - name: Restore vcpkg binary cache
+        uses: actions/cache@v4
+        with:
+          path: vcpkg-bincache
+          key: vcpkg-${{ matrix.triplet }}-${{ steps.rev.outputs.vcpkg }}-${{ hashFiles('Dice/vcpkg.json') }}
+          restore-keys: |
+            vcpkg-${{ matrix.triplet }}-${{ steps.rev.outputs.vcpkg }}-
+            vcpkg-${{ matrix.triplet }}-
+
+      - name: Bootstrap vcpkg
+        shell: cmd
+        run: |
+          if not exist vcpkg-bincache mkdir vcpkg-bincache
+          call Dice\vcpkg\bootstrap-vcpkg.bat -disableMetrics
+
+      - name: Configure
+        shell: bash
+        run: >
+          cmake -S Dice -B Dice/build -A ${{ matrix.platform }}
+          -DCMAKE_BUILD_TYPE=Release
+          -DDLL_SUFFIX=.${{ matrix.dll_sfx }}
+          -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
+          -DCMAKE_SYSTEM_VERSION=10.0.19041.0
+
+      - name: Build
+        run: cmake --build Dice/build --config Release
+
+      - name: Collect
+        shell: bash
+        run: |
+          mkdir -p out
+          f=$(find Dice/build -name "w4123.Dice.${{ matrix.dll_sfx }}.dll" | head -n1)
+          test -n "$f"
+          cp "$f" out/
+          echo "Dice-Developer-Team/Dice@${{ steps.rev.outputs.dice }} + patches/dice-core" > out/CORE_SOURCE.txt
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dice-core-win-${{ matrix.arch }}
+          path: out/*
+
+  e2e:
+    name: End-to-end test (${{ matrix.arch }})
+    needs: [host, core]
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            dll: w4123.Dice.windows.amd64.dll
+          - arch: x86
+            dll: w4123.Dice.windows.i386.dll
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: dice-host-win-${{ matrix.arch }}
+          path: bin
+      - uses: actions/download-artifact@v4
+        with:
+          name: dice-core-win-${{ matrix.arch }}
+          path: bin
+      - name: Run
+        run: node tests/e2e.mjs bin/dice-host.exe bin/${{ matrix.dll }}
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-logs-${{ matrix.arch }}
+          path: bin/logs/
+
+  package:
+    name: Package
+    needs: [host, core, e2e]
+    if: always() && needs.host.result == 'success' && needs.e2e.result != 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Assemble zips
+        shell: bash
+        run: |
+          set -e
+          ver="${GITHUB_REF_NAME}"
+          [[ "$ver" == v* ]] || ver="$(git rev-parse --short HEAD)"
+          mkdir -p dist
+          for arch in x64 x86; do
+            d="stage/NapDice-${ver}-win-${arch}"
+            mkdir -p "$d"
+            cp "artifacts/dice-host-win-${arch}/dice-host.exe" "$d/"
+            if [ -d "artifacts/dice-core-win-${arch}" ]; then
+              cp artifacts/dice-core-win-${arch}/* "$d/"
+            fi
+            cp LICENSE "$d/LICENSE.txt"
+            cp docs/使用说明.txt "$d/"
+            (cd stage && zip -qr "../dist/NapDice-${ver}-win-${arch}.zip" "NapDice-${ver}-win-${arch}")
+          done
+          ls -la dist
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NapDice-windows
+          path: dist/*.zip
+
+      - name: Release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.zip
+          generate_release_notes: true
