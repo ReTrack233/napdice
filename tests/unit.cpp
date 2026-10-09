@@ -73,7 +73,9 @@ int main() {
 	// ---- paths
 	{
 		std::string s = "骰子/测试 1.png";
-		CHECK_EQ(plat::path_u8(plat::u8path(s)), plat::path_u8(fs::path(plat::u8path("骰子")) / plat::u8path("测试 1.png")));
+		CHECK_EQ(plat::path_u8(plat::u8path(s)), s);
+		// operator/ inserts the preferred separator ('\' on Windows), so compare as paths, not strings.
+		CHECK(plat::u8path(s) == fs::path(plat::u8path("骰子")) / plat::u8path("测试 1.png"));
 		bool lossless = false;
 		std::string n = plat::utf8_to_native("C:/Dice/abc", lossless);
 		CHECK(lossless);
