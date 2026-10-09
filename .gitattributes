@@ -1,0 +1,3 @@
+# Keep patches byte-exact. Upstream Dice! marks *.cpp as -text (LF on every platform), so a patch
+# converted to CRLF by checkout on Windows no longer matches and CI would silently skip it.
+*.patch -text
