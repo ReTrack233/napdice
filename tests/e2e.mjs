@@ -55,7 +55,9 @@ function sh (cmd, timeout = 120000) {
 const groupReply =(re, since) => mock.waitAction(a => a.action === 'send_group_msg' && Number(a.params.group_id) === GROUP && re.test(a.params.message), 20000, since);
 
 // ---------------------------------------------------------------- fixture
-const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'napdice-'));
+// Resolve to the real long path: on Windows %TEMP% is often an 8.3 short path (C:\Users\RUNNER~1\…),
+// while dice-host canonicalizes root_dir, so expected absolute paths must use the same form.
+const tmp = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'napdice-')));
 // Space + CJK on purpose. On Windows the core needs paths representable in the ANSI code page,
 // which on CI runners (cp1252) excludes CJK, so use ASCII there.
 const IS_WIN = process.platform === 'win32';
