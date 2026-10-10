@@ -97,7 +97,7 @@ Windows 下核心按系统代码页处理路径，`root_dir` 中不应包含当�
 
 ## 核心补丁
 
-发布包中的 Dice! 核心基于 newdev 分支编译，并应用了 `patches/dice-core` 中的两处修复，分别解决 `AnysTable::from_json` 无限递归的问题，以及 Lua `askExtra` 传入 table 参数时参数丢失的问题。详细说明见 [patches/dice-core/README.md](patches/dice-core/README.md)。
+发布包中的 Dice! 核心基于 newdev 分支编译，并应用了 `patches/dice-core` 中的三处修复，分别解决 MSVC 编译的核心在加载时卡死的问题、`AnysTable::from_json` 无限递归的问题，以及 Lua `askExtra` 传入 table 参数时参数丢失的问题。详细说明见 [patches/dice-core/README.md](patches/dice-core/README.md)。
 
 ## 已知问题
 

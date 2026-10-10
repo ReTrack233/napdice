@@ -23,3 +23,24 @@
 该问题与编译器无关。未应用此补丁时，Lua 脚本以 table 调用 `askExtra` 无法传递参数，应改为传入 JSON 字符串。
 
 修改为 `lua_to_table(L, 1).to_json()`。
+
+## 0003-msvc-randint-static-init
+
+文件：`Dice/RandomGenerator.cpp`
+
+该文件用 `defined(__i386__) || defined(__x86_64__)` 判断 x86 平台：满足时每次调用 `Randint` 都以 `__rdtsc()` 为种子新建局部 `std::mt19937`，否则使用一个全局的 `std::mt19937 gen`。这两个宏只有 GCC、Clang（含 clang-cl）定义，MSVC 使用的是 `_M_IX86`、`_M_X64`，因此 MSVC 编译时走的是全局 `gen` 分支。文件内 `#ifdef _MSC_VER` 引入 `<intrin.h>` 的写法说明，原意是让 MSVC 走 x86 分支。
+
+全局 `gen` 需要动态初始化。全局对象 `console`（`Dice/DiceConsole.cpp`）在构造时调用 `genKey` 生成 `authkey_pub`、`authkey_pri`，而 MSVC 按目标文件的链接顺序执行动态初始化，DiceConsole 排在 RandomGenerator 之前。此时 `gen` 尚未初始化，内部状态全为 0，输出恒为 0；MSVC 的 `uniform_int_distribution` 采用拒绝采样，会一直拒绝 0，于是陷入死循环。该循环发生在 `LoadLibrary` 内部、持有加载器锁期间，表现为进程卡在加载核心这一步，其他线程也无法创建或退出。
+
+在 Windows CI 的端到端测试中，用调试器抓取卡住时的调用栈确认了该问题：
+
+```
+w4123_Dice!RandomGenerator::Randint
+w4123_Dice!RandomGenerator::genKey
+w4123_Dice!`dynamic initializer for 'console''
+w4123_Dice!_initterm
+...
+KERNELBASE!LoadLibraryExW
+```
+
+修改为在三处条件中加入 `defined(_M_IX86) || defined(_M_X64)`，使 MSVC 与 GCC、Clang 走同一分支。GCC、Clang 编译的核心不受影响。

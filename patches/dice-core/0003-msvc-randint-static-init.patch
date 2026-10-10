@@ -1,0 +1,30 @@
+diff --git a/Dice/RandomGenerator.cpp b/Dice/RandomGenerator.cpp
+index 542c5f1..2f90974 100644
+--- a/Dice/RandomGenerator.cpp
++++ b/Dice/RandomGenerator.cpp
+@@ -24,7 +24,7 @@
+ #include <random>
+ #include <chrono>
+ 
+-#if defined(__i386__) || defined(__x86_64__)
++#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
+ #ifdef _MSC_VER
+ #include <intrin.h>
+ #else
+@@ -42,14 +42,14 @@ namespace RandomGenerator
+ {
+ 	unsigned long long GetCycleCount()
+ 	{
+-#if defined(__i386__) || defined(__x86_64__)
++#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
+ 		return __rdtsc();
+ #else
+ 		return static_cast<unsigned long long> (std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+ #endif	
+ 	}
+ 	
+-#if defined(__i386__) || defined(__x86_64__)
++#if defined(__i386__) || defined(__x86_64__) || defined(_M_IX86) || defined(_M_X64)
+ 	int Randint(int lowest, int highest)
+ 	{
+ 		std::mt19937 gen(static_cast<unsigned int>(GetCycleCount()));
