@@ -100,9 +100,15 @@ std::string utf8_to_native(const std::string& s, bool& lossless) {
 
 void* lib_open(const fs::path& p, std::string& err) {
 #ifdef _WIN32
+	// Keep the loader from showing a "DLL not found / bad image / entry point" message box. With no one
+	// to click it (a service, a remote session, CI) it would hang the host forever while holding the
+	// loader lock; with this set, LoadLibrary fails with an error code we can report instead.
+	DWORD oldMode = 0;
+	const bool modeSet = SetThreadErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX, &oldMode) != FALSE;
 	HMODULE h = LoadLibraryExW(p.wstring().c_str(), nullptr, LOAD_WITH_ALTERED_SEARCH_PATH);
+	const DWORD code = h ? 0 : GetLastError();
+	if (modeSet) SetThreadErrorMode(oldMode, nullptr);
 	if (!h) {
-		DWORD code = GetLastError();
 		wchar_t* msg = nullptr;
 		FormatMessageW(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
 					   nullptr, code, 0, reinterpret_cast<LPWSTR>(&msg), 0, nullptr);

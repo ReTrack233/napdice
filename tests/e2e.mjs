@@ -36,7 +36,23 @@ async function step (name, fn) {
   try { await fn(); results.push([name, true, Date.now() - t0]); console.log(`  ✔ ${name} (${Date.now() - t0}ms)`); } catch (e) { results.push([name, false, e.message]); console.log(`  ✘ ${name}: ${e.message}`); }
 }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
-const groupReply = (re, since) => mock.waitAction(a => a.action === 'send_group_msg' && Number(a.params.group_id) === GROUP && re.test(a.params.message), 20000, since);
+const LABEL = path.basename(coreLib);
+
+// GitHub Actions annotation: readable through the checks API even when raw job logs are not.
+function annotate (level, title, text) {
+  if (!process.env.GITHUB_ACTIONS) return;
+  const esc = s => s.replace(/%/g, '%25').replace(/\r/g, '%0D').replace(/\n/g, '%0A');
+  console.log(`::${level} title=${esc(title).replace(/:/g, '%3A').replace(/,/g, '%2C')}::${esc(text)}`);
+}
+const tail = (s, n) => s.split('\n').slice(-n).join('\n');
+function sh (cmd, timeout = 120000) {
+  try {
+    return execSync(cmd, { timeout, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], maxBuffer: 64 << 20 });
+  } catch (e) {
+    return `${e.stdout || ''}${e.stderr || ''}\n(${String(e.message).split('\n')[0]})`;
+  }
+}
+const groupReply =(re, since) => mock.waitAction(a => a.action === 'send_group_msg' && Number(a.params.group_id) === GROUP && re.test(a.params.message), 20000, since);
 
 // ---------------------------------------------------------------- fixture
 const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'napdice-'));
@@ -137,6 +153,12 @@ await step('连接 NapCat 并启动核心', async () => {
   await waitLog(/Dice! 核心已就绪/, 180000);
   if (!/好友 3002 个，群 1 个/.test(logs)) throw new Error('cache prefetch wrong');
 });
+// Every later step needs a running core; without one they would only time out one by one.
+if (!/Dice! 核心已就绪/.test(logs)) {
+  console.log('\n核心没有就绪，收集诊断信息后结束，其余步骤不再执行');
+  diagnoseStartup();
+  await finish();
+}
 
 let masterKey = '';
 await step('首次运行打印认主口令，私聊 .master 认主', async () => {
@@ -273,10 +295,71 @@ await step(IS_WIN ? '.system die → Killme 优雅退出并保存数据' : 'Ctrl
   if (!fs.readdirSync(path.join(path.dirname(hostBin), 'logs')).length) throw new Error('no log file');
 });
 
-await mock.stop();
-if (!hostExit) host.kill('SIGKILL');
-if (mock.protocolErrors) results.push(['客户端帧均带掩码', false, `${mock.protocolErrors} unmasked frames`]);
+await finish();
 
-const failed = results.filter(r => !r[1]);
-console.log(`\n${results.length - failed.length}/${results.length} passed`);
-process.exit(failed.length ? 1 : 0);
+async function finish () {
+  await mock.stop();
+  if (!hostExit) {
+    if (IS_WIN) sh(`taskkill /T /F /PID ${host.pid}`); // also takes down the worker
+    else {
+      try { const w = childPidOf(host.pid); if (w) process.kill(w, 'SIGKILL'); } catch { }
+      host.kill('SIGKILL');
+    }
+  }
+  if (mock.protocolErrors) results.push(['客户端帧均带掩码', false, `${mock.protocolErrors} unmasked frames`]);
+  const failed = results.filter(r => !r[1]);
+  console.log(`\n${results.length - failed.length}/${results.length} passed`);
+  if (failed.length) {
+    annotate('error', `${LABEL}: ${failed.length} 项失败`,
+      failed.map(r => `✘ ${r[0]}: ${r[2]}`).join('\n') + '\n\n' + tail(logs, 40));
+  }
+  process.exit(failed.length ? 1 : 0);
+}
+
+// The core never came up. Record where the worker is stuck: loader message boxes, the core's DLL
+// imports, and every thread's stack (main thread in full). Output goes to stdout, to
+// logs/startup-diagnostics.txt (uploaded with the e2e logs) and to annotations.
+function diagnoseStartup () {
+  const out = [];
+  const add = (title, body) => {
+    body = String(body).trim() || '(empty)';
+    out.push([title, body]);
+    console.log(`\n==== ${title}\n${body}`);
+  };
+  if (IS_WIN) {
+    const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    add('Application Popup 事件（系统弹窗）', sh('powershell -NoProfile -Command "Get-WinEvent -FilterHashtable @{LogName=\'System\'; ProviderName=\'Application Popup\'} -MaxEvents 10 -ErrorAction SilentlyContinue | Format-List TimeCreated,Message | Out-String -Width 400"'));
+    let pid = 0;
+    try { pid = childPidOf(host.pid); } catch { }
+    const dbgArch = /（32 位）/.test(logs) ? 'x86' : 'x64';
+    const cdb = [pf86, process.env.ProgramFiles || 'C:\\Program Files']
+      .map(p => path.join(p, 'Windows Kits', '10', 'Debuggers', dbgArch, 'cdb.exe')).find(p => fs.existsSync(p));
+    if (!pid) add('工作进程线程栈', 'worker pid not found');
+    else if (!cdb) {
+      add('工作进程线程栈', `cdb (${dbgArch}) not found. Windows Kits:\n` +
+        sh(`dir /s /b "${path.join(pf86, 'Windows Kits', '10')}\\cdb.exe" "${path.join(pf86, 'Windows Kits', '10')}\\Debuggers"`, 60000).split('\n').slice(0, 15).join('\n'));
+    }
+    else {
+      const sym = `srv*${path.join(os.tmpdir(), 'symcache')}*https://msdl.microsoft.com/download/symbols;${path.dirname(coreLib)}`;
+      add(`工作进程 ${pid} 线程栈（cdb）`,
+        sh(`"${cdb}" -pv -p ${pid} -y "${sym}" -c ".lines -d; !cs -o ntdll!LdrpLoaderLock; ~0kc 80; ~*kc 20; q"`, 300000));
+    }
+    try {
+      const vs = sh(`"${path.join(pf86, 'Microsoft Visual Studio', 'Installer', 'vswhere.exe')}" -latest -property installationPath`).trim().split(/\r?\n/)[0];
+      const msvc = path.join(vs, 'VC', 'Tools', 'MSVC');
+      const dumpbin = path.join(msvc, fs.readdirSync(msvc).sort().pop(), 'bin', 'Hostx64', 'x64', 'dumpbin.exe');
+      add('核心依赖的 DLL（dumpbin /dependents）', sh(`"${dumpbin}" /nologo /dependents "${coreLib}"`));
+    } catch (e) { add('核心依赖的 DLL', 'dumpbin not found: ' + e.message); }
+  }
+  add('dice-host 日志末尾', tail(logs, 15));
+  try {
+    const dir = path.join(path.dirname(hostBin), 'logs');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'startup-diagnostics.txt'), out.map(([t, b]) => `==== ${t}\n${b}\n`).join('\n'));
+  } catch { }
+  // At most 10 annotations per level per step, so pack everything into a few ~3 KB chunks.
+  const text = out.map(([t, b]) => `## ${t}\n${b}`).join('\n\n');
+  for (let i = 0, n = 1; i < text.length && n <= 9; i += 3000, n++) {
+    annotate('warning', `${LABEL} 启动诊断 ${n}`, text.slice(i, i + 3000));
+  }
+}

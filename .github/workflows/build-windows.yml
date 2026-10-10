@@ -126,6 +126,9 @@ jobs:
           if not exist vcpkg-bincache mkdir vcpkg-bincache
           call Dice\vcpkg\bootstrap-vcpkg.bat -disableMetrics
 
+      # Release as upstream builds it, plus a PDB (-Zi / -DEBUG:FULL) so a hang or crash in the
+      # end-to-end test can be turned into a readable stack. The PDB is uploaded separately and is
+      # not part of the release zips.
       - name: Configure
         shell: bash
         run: >
@@ -134,6 +137,9 @@ jobs:
           -DDLL_SUFFIX=.${{ matrix.dll_sfx }}
           -DVCPKG_TARGET_TRIPLET=${{ matrix.triplet }}
           -DCMAKE_SYSTEM_VERSION=10.0.19041.0
+          "-DCMAKE_C_FLAGS_RELEASE=-O2 -Ob2 -DNDEBUG -Zi"
+          "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -Ob2 -DNDEBUG -Zi"
+          "-DCMAKE_SHARED_LINKER_FLAGS_RELEASE=-INCREMENTAL:NO -DEBUG:FULL -OPT:REF -OPT:ICF"
 
       - name: Build
         run: cmake --build Dice/build --config Release
@@ -146,11 +152,19 @@ jobs:
           test -n "$f"
           cp "$f" out/
           echo "Dice-Developer-Team/Dice@${{ steps.rev.outputs.dice }} + patches/dice-core" > out/CORE_SOURCE.txt
+          mkdir -p pdb
+          if [ -f "${f%.dll}.pdb" ]; then cp "${f%.dll}.pdb" pdb/; else echo "::warning::no PDB next to $f"; fi
 
       - uses: actions/upload-artifact@v4
         with:
           name: dice-core-win-${{ matrix.arch }}
           path: out/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pdb-dice-core-win-${{ matrix.arch }}
+          path: pdb/*
+          if-no-files-found: ignore
 
   e2e:
     name: End-to-end test (${{ matrix.arch }})
@@ -177,6 +191,12 @@ jobs:
         with:
           name: dice-core-win-${{ matrix.arch }}
           path: bin
+      # Symbols for the startup diagnostics in tests/e2e.mjs; optional.
+      - uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: pdb-dice-core-win-${{ matrix.arch }}
+          path: bin
       - name: Run
         run: node tests/e2e.mjs bin/dice-host.exe bin/${{ matrix.dll }}
       - name: Upload logs
@@ -199,6 +219,7 @@ jobs:
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
+          pattern: dice-*
 
       - name: Assemble zips
         shell: bash

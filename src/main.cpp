@@ -138,6 +138,7 @@ int run_worker(const fs::path& cfgPath) {
 	}
 
 	DiceCore core;
+	logx::info("正在加载 Dice! 核心……");
 	if (!core.load(corePath, err)) {
 		logx::error("加载 Dice! 核心失败: " + err);
 		ob.stop();
