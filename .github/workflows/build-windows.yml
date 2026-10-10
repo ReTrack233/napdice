@@ -87,8 +87,9 @@ jobs:
           submodules: recursive
           path: Dice
 
-      # Two small upstream fixes (see patches/dice-core/README.md). Skipped automatically once
-      # upstream has fixed them.
+      # Upstream fixes plus the local .jrrp change (see patches/dice-core/README.md). The fixes are
+      # skipped automatically once upstream has fixed them; the .jrrp change must apply, otherwise the
+      # release would silently fall back to the remote jrrp server.
       - name: Apply core patches
         shell: bash
         run: |
@@ -96,9 +97,21 @@ jobs:
             if git -C Dice apply --check "$GITHUB_WORKSPACE/$p" 2>/dev/null; then
               git -C Dice apply "$GITHUB_WORKSPACE/$p" && echo "applied $p"
             else
+              case "$p" in
+                *-local-jrrp.patch)
+                  echo "::error::$p no longer applies to the Dice! source; regenerate it"
+                  exit 1 ;;
+              esac
               echo "::warning::skipped $p (already fixed upstream, or the source changed)"
             fi
           done
+
+      - name: Test jrrp logic
+        shell: bash
+        run: |
+          cmake -S patches/dice-core/tests -B build-jrrp -A ${{ matrix.platform }} "-DDICE_SRC=$(pwd -W)/Dice/Dice"
+          cmake --build build-jrrp --config Release
+          ./build-jrrp/Release/jrrp_test.exe
 
       - name: Record Dice! commit
         id: rev
@@ -209,7 +222,7 @@ jobs:
   package:
     name: Package
     needs: [host, core, e2e]
-    if: always() && needs.host.result == 'success' && needs.e2e.result != 'failure'
+    if: always() && needs.host.result == 'success' && needs.core.result != 'failure' && needs.e2e.result != 'failure'
     runs-on: ubuntu-latest
     permissions:
       contents: write

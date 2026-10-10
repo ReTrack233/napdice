@@ -1,0 +1,153 @@
+diff --git a/Dice/DiceConsole.cpp b/Dice/DiceConsole.cpp
+index cce0d23..4630efb 100644
+--- a/Dice/DiceConsole.cpp
++++ b/Dice/DiceConsole.cpp
+@@ -45,7 +45,9 @@ using namespace std;
+ 
+ const fifo_dict_ci<int>Console::intDefault{
+ {"DisabledGlobal",0},{"DisabledListenAt",1},
+-{"DisabledMe",1},{"DisabledJrrp",0},{"DisabledDeck",1},{"DisabledDraw",0},{"DisabledSend",0},
++{"DisabledMe",1},{"DisabledJrrp",0},
++{"JrrpMin",1},{"JrrpMax",100},{"JrrpLowLine",20},{"JrrpPityDays",2},{"JrrpPityMin",50},
++{"DisabledDeck",1},{"DisabledDraw",0},{"DisabledSend",0},
+ {"Private",0},{"CheckGroupLicense",0},
+ {"ListenGroupRequest",1},{"ListenGroupAdd",1},
+ {"ListenFriendRequest",1},{"ListenFriendAdd",1},{"AllowStranger",1},
+@@ -76,6 +78,11 @@ const std::unordered_map<std::string,string>Console::confComment{
+ 	{"DisabledListenAt","关闭状态下，自身被at时也响应"},
+ 	{"DisabledMe","全局禁用.me，对trust4+不起效"},
+ 	{"DisabledJrrp","全局禁用.jrrp，对trust4+不起效"},
++	{"JrrpMin","今日人品的最小值，在JrrpMin~JrrpMax内均匀取值"},
++	{"JrrpMax","今日人品的最大值"},
++	{"JrrpLowLine","今日人品不高于此值算一次低值，0则不统计"},
++	{"JrrpPityDays","连续低值达到此次数后，下一次悄悄在JrrpPityMin~JrrpMax内取值；0则关闭"},
++	{"JrrpPityMin","连续低值后的取值下限"},
+ 	{"DisabledDeck","全局禁用.deck，对trust4+不起效"},
+ 	{"DisabledDraw","全局禁用.draw，对trust4+不起效"},
+ 	{"DisabledSend","全局禁用.send，对trust4+不起效"},
+diff --git a/Dice/DiceJrrp.h b/Dice/DiceJrrp.h
+new file mode 100644
+index 0000000..1795a75
+--- /dev/null
++++ b/Dice/DiceJrrp.h
+@@ -0,0 +1,50 @@
++#pragma once
++/*
++ * 今日人品（本地生成）
++ *
++ * 只含纯逻辑，不依赖核心的其他部分：随机数由调用方传入，方便单独测试。
++ * 参数对应 console 的设置项，见 DiceConsole.cpp：
++ *   JrrpMin、JrrpMax  人品值在 [JrrpMin, JrrpMax] 内均匀取值；填反了自动对调
++ *   JrrpLowLine       人品值不高于此值算一次低值；0 表示不统计（低值补偿随之失效）
++ *   JrrpPityDays      连续低值达到此次数后，下一次在 [JrrpPityMin, JrrpMax] 内取值；0 表示关闭
++ *   JrrpPityMin       低值补偿时的下限，会被限制在 [JrrpMin, JrrpMax] 之内
++ * 低值补偿不会在回复中体现。“连续”按查询过人品的日子计算：中间没有查询的日子既不计入，也不打断。
++ */
++// min/max 加括号调用：核心在 Windows 下引入 <Windows.h> 时没有定义 NOMINMAX
++#include <algorithm>
++
++namespace jrrp {
++
++struct Params {
++	int min = 1;
++	int max = 100;
++	int low_line = 20;
++	int pity_days = 2;
++	int pity_min = 50;
++};
++
++struct Result {
++	int value = 0;       // 今日人品
++	bool pity = false;   // 本次是否做了低值补偿
++	int streak = 0;      // 本次之前已连续低值的次数
++	int next_streak = 0; // 计入本次之后的连续低值次数，写回用户数据
++};
++
++// randint(lo, hi) 须返回闭区间 [lo, hi] 内均匀分布的整数
++template <class RandInt>
++Result roll(const Params& p, int prev_streak, RandInt&& randint) {
++	const int lo{ (std::min)(p.min, p.max) }, hi{ (std::max)(p.min, p.max) };
++	Result r;
++	r.streak = (std::max)(prev_streak, 0);
++	if (p.pity_days > 0 && p.low_line > 0 && r.streak >= p.pity_days) {
++		r.pity = true;
++		r.value = randint(std::clamp(p.pity_min, lo, hi), hi);
++	}
++	else {
++		r.value = randint(lo, hi);
++	}
++	r.next_streak = (p.low_line > 0 && r.value <= p.low_line) ? r.streak + 1 : 0;
++	return r;
++}
++
++}
+diff --git a/Dice/DiceSchedule.cpp b/Dice/DiceSchedule.cpp
+index f2fdab9..bc18af6 100644
+--- a/Dice/DiceSchedule.cpp
++++ b/Dice/DiceSchedule.cpp
+@@ -11,6 +11,7 @@
+ #include "DiceNetwork.h"
+ #include "DiceMod.h"
+ #include "RandomGenerator.h"
++#include "DiceJrrp.h"
+ #include <condition_variable>
+ #include <chrono>
+ 
+@@ -175,23 +176,33 @@ void DiceScheduler::start() {
+ void DiceScheduler::end() {
+ }
+ 
++//今日人品：本地生成，不再请求远程服务器
++//当日值记在用户数据里（jrrp_date/jrrp_val），当日记录没来得及保存就重启时，也不会变成另一个数
++//连续低值次数记在 jrrp_low_streak，达到 JrrpPityDays 后下一次悄悄往上取值，规则见 DiceJrrp.h
++static std::mutex mtJrrp;
+ AttrVar DiceToday::getJrrp(long long uid) {
++	std::lock_guard<std::mutex> lock(mtJrrp);
+ 	if (UserInfo.count(uid) && UserInfo[uid]->has("jrrp"))
+ 		return UserInfo[uid]->get("jrrp");
+-	string frmdata = "QQ=" + to_string(console.DiceMaid) + "&v=20190114" + "&QueryQQ=" + to_string(uid);
+-	string res;
+-	if (Network::POST("http://api.kokona.tech:5555/jrrp", frmdata, "", res)) {
+-		return UserInfo[uid]->at("jrrp") = stoi(res);
++	const int date{ (stToday.tm_year + 1900) * 10000 + (stToday.tm_mon + 1) * 100 + stToday.tm_mday };
++	User& user{ getUser(uid) };
++	int val{ 0 };
++	if (user.getConf("jrrp_date") == date && user.has("jrrp_val")) {
++		val = user.getConf("jrrp_val");
+ 	}
+ 	else {
+-		if (!UserInfo[uid]->has("jrrp_local")) {
+-			UserInfo[uid]->at("jrrp_local") = RandomGenerator::Randint(1, 100);
+-			console.log(fmt->format("JRRP获取失败! 错误信息: \n{res}",
+-				AttrVars{ {"res", res} }
+-			), 0);
+-		}
+-		return UserInfo[uid]->get("jrrp_local");
++		const jrrp::Params params{ console["JrrpMin"], console["JrrpMax"], console["JrrpLowLine"],
++			console["JrrpPityDays"], console["JrrpPityMin"] };
++		const jrrp::Result res{ jrrp::roll(params, user.getConf("jrrp_low_streak"),
++			[](int lo, int hi) { return RandomGenerator::Randint(lo, hi); }) };
++		val = res.value;
++		user.setConf("jrrp_date", date);
++		user.setConf("jrrp_val", val);
++		user.setConf("jrrp_low_streak", res.next_streak);
+ 	}
++	get(uid)->at("jrrp") = val;
++	save();
++	return val;
+ }
+ 
+ void DiceToday::daily_clear() {
+diff --git a/Dice/GlobalVar.cpp b/Dice/GlobalVar.cpp
+index 3bb38ba..98e9dc7 100644
+--- a/Dice/GlobalVar.cpp
++++ b/Dice/GlobalVar.cpp
+@@ -896,7 +896,7 @@ pl默认所有群使用同一张卡，如需多开请使用.pc指令切卡
+ 	{"今日人品", "&jrrp"},
+ 	{
+ 		"jrrp",
+-		"今日人品：.jrrp\n.jrrp off\t//群内禁用jrrp\n.jrrp on\t//群内启用jrrp\n一天一个人品值\n2.3.5版本后随机值为均匀分布\n骰娘只负责从溯洄的服务器搬运结果，请勿无能狂怒\n如何发配所有人的命运，只有孕育万千骰娘生机之母，萌妹吃鱼之神，正五棱双角锥体对的监护人，一切诡秘的窥见者，时空舞台外的逆流者，永转的命运之轮——溯洄本体掌握"
++		"今日人品：.jrrp\n.jrrp off\t//群内禁用jrrp\n.jrrp on\t//群内启用jrrp\n一天一个人品值"
+ 	},
+ 	{"send", "发送消息：.send 想对Master说的话\n如果用来调戏Master请做好心理准备"},
+ 	{"入群欢迎", "&welcome"},

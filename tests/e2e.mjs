@@ -190,6 +190,32 @@ await step('牌堆 .draw', async () => {
   await groupReply(/[甲乙]/, since);
 });
 
+// patches/dice-core/0004-local-jrrp: .jrrp is generated locally and stays the same within a day.
+const jrrpOf = a => Number(a.params.message.match(/今天的人品值是: (\d+)/)[1]);
+await step('.jrrp 本地生成，当天重复查询结果不变', async () => {
+  let since = mock.actions.length;
+  mock.groupMsg(GROUP, USER, '.jrrp');
+  const first = jrrpOf(await groupReply(/今天的人品值是: \d+/, since));
+  since = mock.actions.length;
+  mock.groupMsg(GROUP, USER, '.jrrp');
+  const again = jrrpOf(await groupReply(/今天的人品值是: \d+/, since));
+  if (!(first >= 1 && first <= 100)) throw new Error('jrrp out of range: ' + first);
+  if (first !== again) throw new Error(`jrrp changed within the day: ${first} -> ${again}`);
+  if (/JRRP获取失败/.test(logs)) throw new Error('core still asked the remote jrrp server');
+});
+
+await step('.admin JrrpMin / JrrpMax 修改分布区间后对新查询生效', async () => {
+  const toMaster = (re, since) => mock.waitAction(a => a.action === 'send_private_msg' && Number(a.params.user_id) === MASTER && re.test(a.params.message), 20000, since);
+  const admin = async (cmd, re) => { const since = mock.actions.length; mock.privateMsg(MASTER, cmd); await toMaster(re, since); };
+  await admin('.admin JrrpMin 42', /JrrpMin设置为42/);
+  await admin('.admin JrrpMax 42', /JrrpMax设置为42/);
+  const since = mock.actions.length;
+  mock.groupMsg(GROUP, 6000001, '.jrrp');
+  await groupReply(/今天的人品值是: 42(?!\d)/, since);
+  await admin('.admin JrrpMin 1', /JrrpMin设置为1(?!\d)/);
+  await admin('.admin JrrpMax 100', /JrrpMax设置为100/);
+});
+
 await step('Lua askExtra → OneBot 动作', async () => {
   const since = mock.actions.length;
   mock.groupMsg(GROUP, USER, '测试extra');

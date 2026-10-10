@@ -9,7 +9,7 @@ Dice! 的 OneBot 11 驱动，用于在 NapCat 上直接运行 Dice! 骰娘。
 
 NapDice 提供 `dice-host` 程序。该程序加载官方 Dice! 核心（`w4123.Dice.dll`），通过正向 WebSocket 连接 NapCat，并实现 Dice! 的驱动接口（DD API），作用与 DiceDriver.OneBot 相同。
 
-本项目不修改 Dice! 核心的行为，原有 `Dice{QQ号}` 目录下的配置、Lua 脚本、模块、牌堆及用户数据均可直接沿用。
+发布包中的核心除修复几处问题外，只改动了今日人品（`.jrrp`），见[今日人品](#今日人品)。原有 `Dice{QQ号}` 目录下的配置、Lua 脚本、模块、牌堆及用户数据均可直接沿用。
 
 注：NapCat 自 v4.18.6 起仅加载官方白名单内的插件，因此本项目以独立进程的方式运行，通过 OneBot WebSocket 接入，不依赖 NapCat 插件系统。
 
@@ -95,9 +95,29 @@ Windows 下核心按系统代码页处理路径，`root_dir` 中不应包含当�
 
 具体用法见 [docs/扩展接口.md](docs/扩展接口.md)。
 
+## 今日人品
+
+发布包中的核心在本地生成 `.jrrp`，不再请求溯洄的服务器（`api.kokona.tech`）。每人每天一个值，记在用户数据里，当天重复查询或重启后都不会变。
+
+骰主可以用 `.admin <项目> <值>` 修改以下设置，用 `.admin <项目>` 查看当前值，修改后对当天还没查询过的人生效：
+
+| 项目 | 默认值 | 说明 |
+|---|---|---|
+| `JrrpMin` | `1` | 人品值下限 |
+| `JrrpMax` | `100` | 人品值上限。人品值在 `JrrpMin`～`JrrpMax` 之间均匀取值，两者填反时自动对调 |
+| `JrrpLowLine` | `20` | 人品值不高于此值记为一次低值；设为 `0` 则不统计，低值补偿也随之关闭 |
+| `JrrpPityDays` | `2` | 连续低值达到此次数后，下一次改在 `JrrpPityMin`～`JrrpMax` 之间取值；设为 `0` 关闭低值补偿 |
+| `JrrpPityMin` | `50` | 低值补偿时的取值下限，超出 `JrrpMin`～`JrrpMax` 时按区间端点处理 |
+
+低值补偿不会在回复中体现，回复与原来相同。按默认设置，同一个人最多连续两次不高于 20，第三次至少为 50；长期平均值约为 51.3，比不补偿时的 50.5 略高。“连续”按查询过人品的日子计算，中间没查询的日子既不计入，也不打断。
+
+`JrrpLowLine` 和 `JrrpPityMin` 是具体数值，不随分布区间变化。调整 `JrrpMin`、`JrrpMax` 后，请一并检查这两项，例如把区间改为 `30`～`100` 而低值线仍为 `20` 时，低值补偿不会再触发。`.admin` 不接受负数。
+
+使用 `core_path` 指定其他核心时，以上改动不生效。
+
 ## 核心补丁
 
-发布包中的 Dice! 核心基于 newdev 分支编译，并应用了 `patches/dice-core` 中的三处修复，分别解决 MSVC 编译的核心在加载时卡死的问题、`AnysTable::from_json` 无限递归的问题，以及 Lua `askExtra` 传入 table 参数时参数丢失的问题。详细说明见 [patches/dice-core/README.md](patches/dice-core/README.md)。
+发布包中的 Dice! 核心基于 newdev 分支编译，并应用了 `patches/dice-core` 中的补丁：三处修复，分别解决 MSVC 编译的核心在加载时卡死的问题、`AnysTable::from_json` 无限递归的问题，以及 Lua `askExtra` 传入 table 参数时参数丢失的问题；另有一处功能改动，即上文的今日人品。详细说明见 [patches/dice-core/README.md](patches/dice-core/README.md)。
 
 ## 已知问题
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(napdice VERSION 0.1.0 LANGUAGES CXX)
+project(napdice VERSION 0.1.1 LANGUAGES CXX)
 
 # dice-host: the driver executable. The Dice! core (w4123.Dice.dll) is built separately from
 # https://github.com/Dice-Developer-Team/Dice — see .github/workflows/build-windows.yml.

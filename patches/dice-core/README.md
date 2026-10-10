@@ -1,8 +1,11 @@
 # Dice! 核心补丁
 
-本目录中的补丁用于修复 Dice! 核心（[Dice-Developer-Team/Dice](https://github.com/Dice-Developer-Team/Dice)，newdev 分支）中的问题。CI 在编译核心前依次应用这些补丁；若 `git apply --check` 失败（通常表示上游已修复或相关代码已变更），则跳过该补丁并给出警告。
+本目录中的补丁作用于 Dice! 核心（[Dice-Developer-Team/Dice](https://github.com/Dice-Developer-Team/Dice)，newdev 分支）。CI 在编译核心前依次应用这些补丁：
 
-以下问题均在使用真实核心进行端到端测试时发现，尚未提交至上游。
+- 0001～0003 是问题修复。若 `git apply --check` 失败（通常表示上游已修复或相关代码已变更），则跳过该补丁并给出警告。
+- 0004 是功能改动，必须应用。若无法应用，CI 直接报错，需要按新的上游代码重新生成补丁，以免发布包悄悄退回原来的行为。
+
+0001～0003 的问题均在使用真实核心进行端到端测试时发现，尚未提交至上游。
 
 ## 0001-json-brace-init-copy
 
@@ -44,3 +47,17 @@ KERNELBASE!LoadLibraryExW
 ```
 
 修改为在三处条件中加入 `defined(_M_IX86) || defined(_M_X64)`，使 MSVC 与 GCC、Clang 走同一分支。GCC、Clang 编译的核心不受影响。
+
+## 0004-local-jrrp
+
+文件：`Dice/DiceSchedule.cpp`（`DiceToday::getJrrp`）、`Dice/DiceJrrp.h`（新增）、`Dice/DiceConsole.cpp`、`Dice/GlobalVar.cpp`
+
+上游的 `getJrrp` 每次都向 `http://api.kokona.tech:5555/jrrp` 发 POST 请求，失败时才在本地随机。该补丁去掉远程请求，改为本地生成，分布区间可调，并加入不对外提示的低值补偿：
+
+- 人品值在 `[JrrpMin, JrrpMax]` 内均匀取值，随机数沿用核心的 `RandomGenerator::Randint`。
+- 当日值写入用户数据（`jrrp_date`、`jrrp_val`），同时照旧缓存在当日记录中，生成后立即保存当日记录。当日记录未保存就重启时，也从用户数据中取回同一个值。
+- 人品值不高于 `JrrpLowLine` 时，用户数据中的 `jrrp_low_streak` 加 1，否则清零。该值达到 `JrrpPityDays` 时，下一次改在 `[JrrpPityMin, JrrpMax]` 内取值。回复仍用 `strJrrp`，不做任何提示。
+- 五个参数 `JrrpMin`、`JrrpMax`、`JrrpLowLine`、`JrrpPityDays`、`JrrpPityMin` 加入 `Console::intDefault`，可用 `.admin` 修改，也会出现在 WebUI 的设置列表中。
+- 帮助文本 `.help jrrp` 去掉了“从溯洄的服务器搬运结果”等说法。
+
+取值规则单独放在 `DiceJrrp.h` 中，不依赖核心的其他部分。`tests/jrrp_test.cpp` 是它的单元测试，CI 在编译核心前运行；本地可用 `g++ -std=c++17 -I <Dice源码>/Dice patches/dice-core/tests/jrrp_test.cpp` 编译。
